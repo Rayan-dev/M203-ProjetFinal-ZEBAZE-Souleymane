@@ -1,0 +1,10 @@
+[project]
+name = "hockey-scraper"
+version = "1.0.0"
+description = "M203 Projet Final - Sujet 2 - Palmarès NHL + Oscars AJAX + LLM"
+requires-python = ">=3.11"
+dependencies = [
+    "scrapy>=2.11",
+    "httpx>=0.27",
+    "anthropic>=0.25",
+]
