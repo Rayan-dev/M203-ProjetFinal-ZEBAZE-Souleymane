@@ -55,9 +55,9 @@ scrapy crawl hockey
 ### Sorties
 | Fichier | Contenu |
 |---|---|
-| `hockey.db` | SQLite — tables `teams` et `oscars` |
-| `hockey_teams.json` | Export JSON équipes |
-| `oscars.json` | Export JSON films |
+| `hockey.db` | SQLite — table `teams` (idempotence avec ON CONFLICT) |
+| `hockey_teams.json` | Export JSON équipes (582 items) |
+| `oscars.json` | Export JSON films (87 items) |
 
 ---
 

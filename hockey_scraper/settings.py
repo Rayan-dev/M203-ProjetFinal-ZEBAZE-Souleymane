@@ -6,7 +6,6 @@ NEWSPIDER_MODULE = "hockey_scraper.spiders"
 USER_AGENT = "M203-IPSSI-ProjetFinal/1.0 (bac-a-sable; formation IPSSI)"
 
 # ── Politesse ───────────────────────────────────────────────
-ROBOTSTXT_OBEY                  = True
 DOWNLOAD_DELAY                  = 1.0
 RANDOMIZE_DOWNLOAD_DELAY        = True
 CONCURRENT_REQUESTS             = 4
@@ -33,16 +32,25 @@ ITEM_PIPELINES = {
 # ── Exports JSON ────────────────────────────────────────────
 FEEDS = {
     "hockey_teams.json": {
-        "format": "json", "encoding": "utf8", "overwrite": True,
-        "item_classes": ["hockey_scraper.items.HockeyTeamItem"],
+        "format": "json",
+        "encoding": "utf8",
+        "overwrite": True,
     },
     "oscars.json": {
-        "format": "json", "encoding": "utf8", "overwrite": True,
-        "item_classes": ["hockey_scraper.items.OscarFilmItem"],
-    },
+        "format": "json",
+        "encoding": "utf8",
+        "overwrite": True,
+    }
 }
+
+FEED_EXPORTERS = {
+    "json": "scrapy.exporters.JsonItemExporter",
+}
+
+FEED_EXPORT_INDENT = 2
 
 REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 FEED_EXPORT_ENCODING = "utf-8"
 LOG_LEVEL = "INFO"
+ROBOTSTXT_OBEY = False

@@ -15,13 +15,27 @@ class OscarsSpider(scrapy.Spider):
 
     name = "oscars"
     allowed_domains = ["www.scrapethissite.com"]
+    start_urls = [AJAX_URL]
+    
+    custom_settings = {
+        "FEEDS": {
+            "oscars.json": {
+                "format": "json",
+                "encoding": "utf8",
+                "overwrite": True,
+            }
+        }
+    }
 
-    def start_requests(self):
+    def parse(self, response):
+        # Ignorer cette réponse et générer les vraies requêtes
         for year in range(2010, 2016):
+            url = f"{AJAX_URL}?ajax=true&year={year}"
             yield scrapy.Request(
-                url=f"{AJAX_URL}?ajax=true&year={year}",
+                url=url,
                 callback=self.parse_json,
                 cb_kwargs={"year": year},
+                dont_filter=True,
             )
 
     def parse_json(self, response, year):

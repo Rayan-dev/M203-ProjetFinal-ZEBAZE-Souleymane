@@ -1,88 +1,104 @@
-"""
-Pipelines — 3 responsabilités séparées :
-  100 · NormalisePipeline  — str → int / float / bool / None
-  150 · LLMEnrichPipeline  — bonus : catégorise l'ère NHL via Claude API
-  200 · SQLitePipeline     — stockage idempotent (UPSERT)
-"""
 import os
 import sqlite3
-
-import anthropic
 from itemadapter import ItemAdapter
+import anthropic
 
 
+# ─────────────────────────────────────────────
+# 1. NORMALISATION
+# ─────────────────────────────────────────────
 class NormalisePipeline:
-    """Convertit les champs bruts HTML en types Python corrects."""
+    """Convertit les champs string → int / float proprement."""
 
     def process_item(self, item, spider):
         a = ItemAdapter(item)
 
-        if "win_pct" in a.field_names():        # HockeyTeamItem
-            a["year"]          = self._int(a.get("year"))
-            a["wins"]          = self._int(a.get("wins"))
-            a["losses"]        = self._int(a.get("losses"))
-            a["ot_losses"]     = self._int(a.get("ot_losses"))  # None si vide
-            a["win_pct"]       = self._float(a.get("win_pct"))
-            a["goals_for"]     = self._int(a.get("goals_for"))
+        # 👉 Hockey items
+        if a.get("win_pct") is not None:
+
+            a["year"] = self._int(a.get("year"))
+            a["wins"] = self._int(a.get("wins"))
+            a["losses"] = self._int(a.get("losses"))
+            a["ot_losses"] = self._int(a.get("ot_losses"))
+            a["win_pct"] = self._float(a.get("win_pct"))
+            a["goals_for"] = self._int(a.get("goals_for"))
             a["goals_against"] = self._int(a.get("goals_against"))
 
-        if "awards" in a.field_names():         # OscarFilmItem
-            a["year"]         = self._int(a.get("year"))
-            a["awards"]       = self._int(a.get("awards"))
-            a["nominations"]  = self._int(a.get("nominations"))
+        # 👉 Oscars items
+        if a.get("awards") is not None:
+
+            a["year"] = self._int(a.get("year"))
+            a["awards"] = self._int(a.get("awards"))
+            a["nominations"] = self._int(a.get("nominations"))
             a["best_picture"] = bool(a.get("best_picture"))
 
         return item
 
     @staticmethod
     def _int(v):
-        s = str(v).strip() if v is not None else ""
-        return int(s) if s else None
+        try:
+            return int(str(v).strip())
+        except:
+            return None
 
     @staticmethod
     def _float(v):
-        s = str(v).strip() if v is not None else ""
-        return float(s) if s else None
+        try:
+            return float(str(v).strip())
+        except:
+            return None
 
 
+# ─────────────────────────────────────────────
+# 2. LLM ENRICH (OPTIONNEL)
+# ─────────────────────────────────────────────
 class LLMEnrichPipeline:
-    """
-    Bonus LLM — classe chaque équipe dans une ère NHL via Claude Haiku.
-    Désactivé silencieusement si ANTHROPIC_API_KEY est absent.
-    Validation systématique : on n'accepte que les valeurs connues.
-    """
+    """Ajoute une classification d’ère NHL via Claude (optionnel)."""
 
     VALID_ERAS = {"Original Six", "Expansion Era", "Modern Era"}
 
     def open_spider(self, spider):
         key = os.environ.get("ANTHROPIC_API_KEY")
-        self.enabled = bool(key)
-        if self.enabled:
-            self.client = anthropic.Anthropic(api_key=key)
-            spider.logger.info("LLMEnrichPipeline activé.")
-        else:
-            spider.logger.warning("LLMEnrichPipeline désactivé — ANTHROPIC_API_KEY absent.")
+
+        if not key:
+            spider.logger.warning("LLM désactivé (pas de clé API).")
+            self.enabled = False
+            return
+
+        self.client = anthropic.Anthropic(api_key=key)
+        self.enabled = True
+        spider.logger.info("LLM activé.")
 
     def process_item(self, item, spider):
-        if not self.enabled:
+        if not getattr(self, "enabled", False):
             return item
+
         a = ItemAdapter(item)
-        if "win_pct" not in a.field_names():
+
+        if a.get("win_pct") is None:
             return item
 
         try:
             resp = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=20,
-                messages=[{"role": "user", "content": (
-                    f"NHL team '{a.get('name')}', season {a.get('year')}. "
-                    f"Classify into exactly one of: "
-                    f"'Original Six', 'Expansion Era', 'Modern Era'. "
-                    f"Reply with ONLY the category name, nothing else."
-                )}],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"NHL team {a.get('name')} in {a.get('year')}. "
+                        "Classify into: Original Six, Expansion Era, Modern Era. "
+                        "Return ONLY one label."
+                    )
+                }]
             )
-            raw = resp.content[0].text.strip()
-            a["era"] = raw if raw in self.VALID_ERAS else "Unknown"
+
+            era = resp.content[0].text.strip()
+
+            if era in self.VALID_ERAS:
+                a["era"] = era
+            else:
+                a["era"] = "Unknown"
+
         except Exception as e:
             spider.logger.warning(f"LLM error: {e}")
             a["era"] = "Unknown"
@@ -90,30 +106,29 @@ class LLMEnrichPipeline:
         return item
 
 
+# ─────────────────────────────────────────────
+# 3. SQLITE STORAGE
+# ─────────────────────────────────────────────
 class SQLitePipeline:
-    """
-    Stockage idempotent.
-    Clé primaire teams : (name, year) — une franchise sur plusieurs saisons.
-    Clé primaire oscars : (title, year).
-    UPSERT → relancer le crawl ne crée jamais de doublons.
-    """
 
     def open_spider(self, spider):
         self.con = sqlite3.connect("hockey.db")
+
         self.con.execute("""
             CREATE TABLE IF NOT EXISTS teams (
-                name TEXT NOT NULL, year INTEGER NOT NULL,
-                wins INTEGER, losses INTEGER, ot_losses INTEGER,
-                win_pct REAL, goals_for INTEGER, goals_against INTEGER,
+                name TEXT,
+                year INTEGER,
+                wins INTEGER,
+                losses INTEGER,
+                ot_losses INTEGER,
+                win_pct REAL,
+                goals_for INTEGER,
+                goals_against INTEGER,
                 era TEXT,
                 PRIMARY KEY (name, year)
-            )""")
-        self.con.execute("""
-            CREATE TABLE IF NOT EXISTS oscars (
-                title TEXT NOT NULL, year INTEGER NOT NULL,
-                awards INTEGER, nominations INTEGER, best_picture INTEGER,
-                PRIMARY KEY (title, year)
-            )""")
+            )
+        """)
+
         self.con.commit()
 
     def close_spider(self, spider):
@@ -122,26 +137,33 @@ class SQLitePipeline:
     def process_item(self, item, spider):
         a = ItemAdapter(item)
 
-        if "win_pct" in a.field_names():
+        # 👉 Hockey only
+        if a.get("name"):
+
             self.con.execute("""
-                INSERT INTO teams
-                    (name,year,wins,losses,ot_losses,win_pct,goals_for,goals_against,era)
-                VALUES (:name,:year,:wins,:losses,:ot_losses,:win_pct,:goals_for,:goals_against,:era)
-                ON CONFLICT(name,year) DO UPDATE SET
-                    wins=excluded.wins, losses=excluded.losses,
-                    ot_losses=excluded.ot_losses, win_pct=excluded.win_pct,
-                    goals_for=excluded.goals_for, goals_against=excluded.goals_against,
+                INSERT INTO teams (
+                    name, year, wins, losses,
+                    ot_losses, win_pct,
+                    goals_for, goals_against, era
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name, year) DO UPDATE SET
+                    wins=excluded.wins,
+                    losses=excluded.losses,
+                    win_pct=excluded.win_pct,
                     era=excluded.era
-            """, {**dict(a), "era": a.get("era")})
+            """, (
+                a.get("name"),
+                a.get("year"),
+                a.get("wins"),
+                a.get("losses"),
+                a.get("ot_losses"),
+                a.get("win_pct"),
+                a.get("goals_for"),
+                a.get("goals_against"),
+                a.get("era"),
+            ))
 
-        elif "awards" in a.field_names():
-            self.con.execute("""
-                INSERT INTO oscars (title,year,awards,nominations,best_picture)
-                VALUES (:title,:year,:awards,:nominations,:best_picture)
-                ON CONFLICT(title,year) DO UPDATE SET
-                    awards=excluded.awards, nominations=excluded.nominations,
-                    best_picture=excluded.best_picture
-            """, dict(a))
+            self.con.commit()
 
-        self.con.commit()
         return item
